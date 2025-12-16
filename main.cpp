@@ -428,7 +428,404 @@ public:
     double getDisplacement() const { return x; }
     ExperimentParameters &getParams() { return p; }
 };
+// ============================================================================
+// COLLISION BALLS EXPERIMENT
+// ============================================================================
+class CollisionBalls : public IExperiment {
+private:
+    ExperimentParameters p;
+    double t{ 0 };
+    static const int count = 2;
+    Ball balls[count];
+    vector<DataPoint> log;
+    CollisionGraph graph;
 
+    void handleCollisions() {
+        double dx = balls[0].x - balls[1].x;
+        double dy = balls[0].y - balls[1].y;
+        double dist = sqrt(dx * dx + dy * dy);
+        double minD = balls[0].radius + balls[1].radius;
+
+        if (dist < minD && dist > 0) {
+            double m1 = balls[0].mass, m2 = balls[1].mass;
+            double v1 = balls[0].vx, v2 = balls[1].vx;
+
+            balls[0].vx = ((m1 - m2) * v1 + 2 * m2 * v2) / (m1 + m2);
+            balls[1].vx = ((m2 - m1) * v2 + 2 * m1 * v1) / (m1 + m2);
+
+            double overlap = minD - dist;
+            if (overlap > 0) {
+                if (balls[0].x < balls[1].x) {
+                    balls[0].x -= overlap / 2;
+                    balls[1].x += overlap / 2;
+                }
+                else {
+                    balls[0].x += overlap / 2;
+                    balls[1].x -= overlap / 2;
+                }
+            }
+
+            graph.registerCollision(0, 1);
+        }
+    }
+
+public:
+    void setup(const ExperimentParameters& params) override {
+        p = params;
+        t = 0;
+        log.clear();
+
+        for (int i = 0; i < count; ++i) {
+            balls[i] = {
+                5.0 + i * 5.0, 5.0,
+                p.initial_velocities_x[i], 0,
+                p.ball_radii[i], p.ball_masses[i], i
+            };
+        }
+
+        graph.setup(count);
+    }
+
+    void update(double dt) override {
+        if (dt <= 0) return;
+        t += dt;
+
+        for (int i = 0; i < count; ++i) {
+            balls[i].x += balls[i].vx * dt;
+
+            if (balls[i].x < balls[i].radius) {
+                balls[i].x = balls[i].radius;
+                balls[i].vx *= -1;
+            }
+            if (balls[i].x > 15 - balls[i].radius) {
+                balls[i].x = 15 - balls[i].radius;
+                balls[i].vx *= -1;
+            }
+        }
+
+        handleCollisions();
+
+        double ke = calcKE(balls[0].mass, balls[0].vx, balls[0].vy);
+        log.push_back({ t, balls[0].x, balls[0].y, balls[0].vx, balls[0].vy, ke, 0 });
+    }
+
+    vector<string> getActiveDataStructures() const override {
+        return { "Array (Ball[2])", "Graph (Collisions)", "Vector (DataPoints)", "BST (Energy)", "HashMap (Max)" };
+    }
+
+    vector<string> getCurrentPhysicsInfo() const override {
+        int total = 0;
+        for (const auto& n : graph.getNodes())
+            total += n.collision_count;
+
+        return {
+            "Ball 1 Mass: " + std::to_string(balls[0].mass) + " kg",
+            "Ball 2 Mass: " + std::to_string(balls[1].mass) + " kg",
+            "Ball 1 Vel: " + std::to_string(balls[0].vx) + " m/s",
+            "Ball 2 Vel: " + std::to_string(balls[1].vx) + " m/s",
+            "Collisions: " + std::to_string(total / 2)
+        };
+    }
+
+    string getExperimentName() const override { return "Elastic Collision - Two Balls"; }
+    double time() const override { return t; }
+    const vector<DataPoint>& dataLog() const override { return log; }
+    const CollisionGraph& getGraph() const { return graph; }
+    int getCount() const { return count; }
+    const Ball* getBalls() const { return balls; }
+    Ball* getBallsMutable() { return balls; }
+    ExperimentParameters& getParams() { return p; }
+};
+
+// ============================================================================
+// BERNOULLI FLOW EXPERIMENT
+// ============================================================================
+class BernoulliFlow : public IExperiment {
+private:
+    struct Particle {
+        double x, y, vx;
+        int sec;
+    };
+
+    ExperimentParameters p;
+    double t{ 0 };
+    double v1{ 0 }, v2{ 0 }, p1{ 0 }, p2{ 0 };
+    vector<DataPoint> log;
+    vector<Particle> particles;
+
+    void compute() {
+        double a1 = 3.14159 * pow(p.pipe_diameter1 / 2, 2);
+        double a2 = 3.14159 * pow(p.pipe_diameter2 / 2, 2);
+
+        v1 = p.fluid_velocity * (1.0 + 0.15 * sin(t * 1.5));
+        v2 = a2 != 0 ? (a1 * v1) / a2 : v1;
+
+        double dp1 = 0.5 * p.fluid_density * v1 * v1;
+        double dp2 = 0.5 * p.fluid_density * v2 * v2;
+
+        p1 = p.static_pressure;
+        double total = p1 + dp1;
+        p2 = total - dp2;
+    }
+
+public:
+    void setup(const ExperimentParameters& params) override {
+        p = params;
+        t = 0;
+        compute();
+        log.clear();
+        particles.clear();
+
+        for (int i = 0; i < 25; i++) {
+            particles.push_back({
+                0.5 + i * 0.2,
+                5.0 + (rand() % 100) / 100.0,
+                v1, 0
+                });
+        }
+    }
+
+    void update(double dt) override {
+        if (dt <= 0) return;
+        t += dt;
+        compute();
+
+        for (auto& pt : particles) {
+            if (pt.sec == 0) {
+                pt.x += v1 * dt * 0.5;
+                pt.vx = v1;
+                if (pt.x > 7.5) pt.sec = 1;
+            }
+            else {
+                pt.x += v2 * dt * 0.5;
+                pt.vx = v2;
+                if (pt.x > 15) {
+                    pt.x = 0.5;
+                    pt.sec = 0;
+                }
+            }
+        }
+
+        log.push_back({ t, v1, v2, 0, 0, 0, 0, p2 });
+    }
+
+    vector<string> getActiveDataStructures() const override {
+        return { "Vector (Particles)", "Vector (DataPoints)", "Variables (v,p)", "BST (Energy)", "HashMap (Max)" };
+    }
+
+    vector<string> getCurrentPhysicsInfo() const override {
+        return {
+            "Velocity 1: " + std::to_string(v1) + " m/s",
+            "Velocity 2: " + std::to_string(v2) + " m/s",
+            "Pressure 1: " + std::to_string(p1 / 1000) + " kPa",
+            "Pressure 2: " + std::to_string(p2 / 1000) + " kPa",
+            "Density: " + std::to_string(p.fluid_density) + " kg/m³"
+        };
+    }
+
+    string getExperimentName() const override { return "Bernoulli's Principle - Fluid Flow"; }
+    double time() const override { return t; }
+    const vector<DataPoint>& dataLog() const override { return log; }
+    double getV1() const { return v1; }
+    double getV2() const { return v2; }
+    double getP1() const { return p1; }
+    double getP2() const { return p2; }
+    const vector<Particle>& getParticles() const { return particles; }
+    ExperimentParameters& getParams() { return p; }
+};
+
+// ============================================================================
+// PROJECTILE MOTION EXPERIMENT
+// ============================================================================
+class ProjectileMotion : public IExperiment {
+private:
+    ExperimentParameters p;
+    double t{ 0 };
+    double x{ 0 }, y{ 0 };
+    double vx{ 0 }, vy{ 0 };
+    vector<DataPoint> log;
+    vector<Vector2> trajectory;
+    bool landed{ false };
+
+public:
+    void setup(const ExperimentParameters& params) override {
+        p = params;
+        t = 0;
+        x = 0;
+        y = 0;
+        landed = false;
+
+        double angle = degToRad(p.projectile_angle);
+        vx = p.projectile_speed * cos(angle);
+        vy = p.projectile_speed * sin(angle);
+
+        log.clear();
+        trajectory.clear();
+    }
+
+    void update(double dt) override {
+        if (dt <= 0 || landed) return;
+        t += dt;
+
+        double speed = sqrt(vx * vx + vy * vy);
+        double drag_x = -p.air_resistance * vx * speed;
+        double drag_y = -p.air_resistance * vy * speed;
+
+        vx += drag_x * dt;
+        vy += (drag_y - p.gravity) * dt;
+
+        x += vx * dt;
+        y += vy * dt;
+
+        if (y < 0) {
+            y = 0;
+            landed = true;
+        }
+
+        trajectory.push_back({ (float)x, (float)y });
+
+        double ke = calcKE(p.mass, vx, vy);
+        double pe = calcPE(p.mass, p.gravity, y);
+        log.push_back({ t, x, y, vx, vy, ke, pe });
+    }
+
+    vector<string> getActiveDataStructures() const override {
+        return { "Variables (x,y,vx,vy)", "Vector (Trajectory)", "Vector (DataPoints)", "BST (Energy)", "HashMap (Max)" };
+    }
+
+    vector<string> getCurrentPhysicsInfo() const override {
+        double speed = sqrt(vx * vx + vy * vy);
+        double angle = atan2(vy, vx) * 180.0 / 3.14159;
+
+        return {
+            "Position: (" + std::to_string(x) + ", " + std::to_string(y) + ") m",
+            "Velocity: " + std::to_string(speed) + " m/s",
+            "Angle: " + std::to_string(angle) + "°",
+            "Height: " + std::to_string(y) + " m",
+            "Range: " + std::to_string(x) + " m"
+        };
+    }
+
+    string getExperimentName() const override { return "Projectile Motion"; }
+    double time() const override { return t; }
+    const vector<DataPoint>& dataLog() const override { return log; }
+    double getX() const { return x; }
+    double getY() const { return y; }
+    const vector<Vector2>& getTrajectory() const { return trajectory; }
+    bool hasLanded() const { return landed; }
+    ExperimentParameters& getParams() { return p; }
+};
+
+// ============================================================================
+// PHYSICS ENGINE
+// ============================================================================
+class PhysicsEngine {
+private:
+    ExperimentParameters params;
+    unique_ptr<IExperiment> exp;
+    vector<DataPoint> empty;
+    EnergyBST bst;
+    AnalysisData analysis;
+    stack<ExperimentParameters> undo;
+    bool paused = false;
+
+    void create() {
+        if (params.experiment_type == "FreeFall")
+            exp = make_unique<FreeFall>();
+        else if (params.experiment_type == "Pendulum")
+            exp = make_unique<Pendulum>();
+        else if (params.experiment_type == "SpringSystem")
+            exp = make_unique<SpringSystem>();
+        else if (params.experiment_type == "CollisionBalls")
+            exp = make_unique<CollisionBalls>();
+        else if (params.experiment_type == "Bernoulli")
+            exp = make_unique<BernoulliFlow>();
+        else if (params.experiment_type == "Projectile")
+            exp = make_unique<ProjectileMotion>();
+    }
+
+public:
+    void setParameters(const ExperimentParameters& p) {
+        undo.push(params);
+        params = p;
+        create();
+        exp->setup(params);
+        bst.clear();
+        analysis = AnalysisData();
+        paused = false;
+    }
+
+    void updateSimulation(double dt) {
+        if (exp && dt > 0 && !paused) exp->update(dt);
+
+        if (!getDataLog().empty()) {
+            const auto& d = getDataLog().back();
+            bst.insert(d.kinetic_energy, d.time);
+            analysis.updateMaxKE(d.kinetic_energy);
+
+            double vel = sqrt(d.velocity_x * d.velocity_x + d.velocity_y * d.velocity_y);
+            analysis.updateMaxVelocity(vel);
+        }
+    }
+
+    void togglePause() { paused = !paused; }
+    bool isPaused() const { return paused; }
+
+    void sortDataLog() {
+        if (!exp) return;
+        vector<DataPoint>& log = const_cast<vector<DataPoint>&>(exp->dataLog());
+
+        for (size_t i = 1; i < log.size(); ++i) {
+            DataPoint key = log[i];
+            int j = i - 1;
+            while (j >= 0 && log[j].kinetic_energy > key.kinetic_energy) {
+                log[j + 1] = log[j];
+                j--;
+            }
+            log[j + 1] = key;
+        }
+    }
+
+    long long factorial(int n) {
+        if (n <= 0) return (n == 0) ? 1 : 0;
+        return (long long)n * factorial(n - 1);
+    }
+
+    ExperimentParameters& getParams() { return params; }
+    const vector<DataPoint>& getDataLog() const { return exp ? exp->dataLog() : empty; }
+    const EnergyBST& getBST() const { return bst; }
+    const AnalysisData& getAnalysis() const { return analysis; }
+    IExperiment* getExp() { return exp.get(); }
+
+    FreeFall* asFreeFall() { return dynamic_cast<FreeFall*>(exp.get()); }
+    Pendulum* asPendulum() { return dynamic_cast<Pendulum*>(exp.get()); }
+    SpringSystem* asSpring() { return dynamic_cast<SpringSystem*>(exp.get()); }
+    CollisionBalls* asCollision() { return dynamic_cast<CollisionBalls*>(exp.get()); }
+    BernoulliFlow* asBernoulli() { return dynamic_cast<BernoulliFlow*>(exp.get()); }
+    ProjectileMotion* asProjectile() { return dynamic_cast<ProjectileMotion*>(exp.get()); }
+};
+
+// ============================================================================
+// DRAWING HELPERS
+// ============================================================================
+void DrawSpring(Vector2 start, Vector2 end, int coils, float w, Color c) {
+    Vector2 d = { end.x - start.x, end.y - start.y };
+    float len = sqrt(d.x * d.x + d.y * d.y);
+    Vector2 dir = { d.x / len, d.y / len };
+    Vector2 perp = { -dir.y, dir.x };
+    float step = len / coils;
+    Vector2 cur = start;
+
+    for (int i = 0; i < coils; i++) {
+        Vector2 next = { start.x + dir.x * step * (i + 1), start.y + dir.y * step * (i + 1) };
+        Vector2 p1 = { cur.x + perp.x * w, cur.y + perp.y * w };
+        Vector2 p2 = { next.x - perp.x * w, next.y - perp.y * w };
+        DrawLineEx(cur, p1, 2, c);
+        DrawLineEx(p1, p2, 2, c);
+        cur = next;
+    }
+    DrawLineEx(cur, end, 2, c);
+}
 
 // ============================================================================
 // MAIN LOOP
